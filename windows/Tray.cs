@@ -28,7 +28,7 @@ internal sealed class RelayTray : ApplicationContext
     Process manager;
     string node, lastNotice = "";
     bool exiting, recoveryStopped;
-    DateTime startedAt;
+    DateTime startedAt, lastHealthyHeartbeatAt;
     Form window;
     Label statusLabel;
     Label metricsLabel;
@@ -86,7 +86,7 @@ internal sealed class RelayTray : ApplicationContext
             manager = Process.GetProcessById(existingManagerPid);
             if (manager.HasExited || !String.Equals(manager.MainModule.FileName, node, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Unexpected relay manager process.");
-            startedAt = DateTime.UtcNow;
+            startedAt = lastHealthyHeartbeatAt = DateTime.UtcNow;
         } else StartManager();
         timer.Interval = 2000;
         timer.Tick += delegate { Tick(); };
@@ -131,7 +131,7 @@ internal sealed class RelayTray : ApplicationContext
             manager.OutputDataReceived += delegate { };
             manager.ErrorDataReceived += delegate { };
             manager.Start(); manager.BeginOutputReadLine(); manager.BeginErrorReadLine();
-            startedAt = DateTime.UtcNow;
+            startedAt = lastHealthyHeartbeatAt = DateTime.UtcNow;
         } catch { recoveryStopped = true; RestoreConfig(); Notice("runtime", "자동 관리 시작 실패", "기본 연결 복구를 시도했습니다. 상태 보기에서 다시 시도할 수 있습니다."); }
     }
     void RestoreConfig()
@@ -153,6 +153,9 @@ internal sealed class RelayTray : ApplicationContext
             ShowStatus();
         }
         if (manager != null && manager.HasExited && !exiting && !recoveryStopped) {
+            int? exitCode = null;
+            try { exitCode = manager.ExitCode; } catch { }
+            Lifecycle("manager_exited", new Dictionary<string, object> { { "pid", manager.Id }, { "exitCode", exitCode } });
             if (Text(s, "pid") == manager.Id.ToString() && Text(s, "stopped") == "True") { ExitThread(); return; }
             DateTime now = DateTime.UtcNow;
             while (crashes.Count > 0 && (now - crashes.Peek()).TotalMinutes > 5) crashes.Dequeue();
@@ -163,9 +166,12 @@ internal sealed class RelayTray : ApplicationContext
             } else { manager.Dispose(); StartManager(); }
         }
         if (manager != null && !manager.HasExited && !exiting) {
-            DateTimeOffset updated;
-            bool fresh = Text(s, "pid") == manager.Id.ToString() && DateTimeOffset.TryParse(Text(s, "updated"), out updated) && (DateTimeOffset.UtcNow - updated).TotalSeconds < 90;
-            if (!fresh && Text(s, "shuttingDown") != "True" && (DateTime.UtcNow - startedAt).TotalSeconds > 100) { try { manager.Kill(); } catch { } }
+            DateTime now = DateTime.UtcNow;
+            if (FreshHeartbeat(s, manager.Id, now)) lastHealthyHeartbeatAt = DateTimeOffset.Parse(Text(s, "updated")).UtcDateTime;
+            else if (ShouldRestartManager(s, manager.Id, now, startedAt, lastHealthyHeartbeatAt)) {
+                Lifecycle("watchdog_restart", new Dictionary<string, object> { { "pid", manager.Id }, { "secondsWithoutHealthyHeartbeat", (now - lastHealthyHeartbeatAt).TotalSeconds }, { "statusPidMatches", Text(s, "pid") == manager.Id.ToString() }, { "statusHasTimestamp", Text(s, "updated").Length > 0 } });
+                try { manager.Kill(); } catch { }
+            }
         }
         string label = recoveryStopped ? "자동 관리 복구 필요" : Text(s, "label");
         if (label.Length == 0) label = "시작 중…";
@@ -176,6 +182,29 @@ internal sealed class RelayTray : ApplicationContext
         if (attention.Length > 0) Notice(attention, label, Text(s, "detail"));
         UpdateTrayUsage(s);
         UpdateStatus(s);
+    }
+    static bool FreshHeartbeat(Dictionary<string, object> status, int pid, DateTime now)
+    {
+        DateTimeOffset updated;
+        return Text(status, "pid") == pid.ToString() && DateTimeOffset.TryParse(Text(status, "updated"), out updated) &&
+            (new DateTimeOffset(now) - updated).TotalSeconds >= -5 && (new DateTimeOffset(now) - updated).TotalSeconds < 90;
+    }
+    static bool ShouldRestartManager(Dictionary<string, object> status, int pid, DateTime now, DateTime started, DateTime lastHealthy)
+    {
+        // Missing/unreadable or mismatched status is not proof that the live process is stuck.
+        return !FreshHeartbeat(status, pid, now) && Text(status, "shuttingDown") != "True" &&
+            (now - started).TotalSeconds > 100 && (now - lastHealthy).TotalSeconds > 90;
+    }
+    void Lifecycle(string name, Dictionary<string, object> detail)
+    {
+        try {
+            string path = Path.Combine(state, "tray-audit.jsonl");
+            if (File.Exists(path) && new FileInfo(path).Length > 2 * 1024 * 1024) {
+                if (File.Exists(path + ".1")) File.Delete(path + ".1"); File.Move(path, path + ".1");
+            }
+            detail["at"] = DateTimeOffset.UtcNow.ToString("o"); detail["event"] = name;
+            File.AppendAllText(path, json.Serialize(detail) + "\n", new UTF8Encoding(false));
+        } catch { }
     }
     void UpdateTrayUsage(Dictionary<string, object> status)
     {

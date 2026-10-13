@@ -47,6 +47,8 @@ test('Windows tray restarts a crashed manager, retains direct mode, and exits wi
   process.kill(first.pid);
   const second = await waitUntil(async () => { const s = await status(); return s.pid !== first.pid && s.mode === 'off' ? s : null; });
   assert.notEqual(second.pid, first.pid);
+  const lifecycle = (await readFile(join(state, 'tray-audit.jsonl'), 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert(lifecycle.some(event => event.event === 'manager_exited' && event.pid === first.pid));
   assert.equal(await readFile(join(home, 'config.toml'), 'utf8'), original);
   const cmd = join(state, 'commands', `${randomUUID()}.json`);
   await writeFile(cmd, '{"action":"quit"}');
