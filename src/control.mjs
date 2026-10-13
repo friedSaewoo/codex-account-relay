@@ -1,0 +1,11 @@
+import { mkdir, writeFile, rename } from 'node:fs/promises';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { stateHome } from './credentials.mjs';
+const [action, mode] = process.argv.slice(2);
+if (!['mode', 'check', 'login', 'quit', 'usage'].includes(action) || (action === 'mode' && !['auto', 'pro', 'off'].includes(mode))) throw new Error('Invalid command.');
+const path = join(stateHome, 'commands', `${randomUUID()}.json`);
+await mkdir(join(stateHome, 'commands'), { recursive: true });
+await writeFile(`${path}.tmp`, JSON.stringify({ action, mode }));
+await rename(`${path}.tmp`, path);
+console.log('Command sent to the tray manager.');
