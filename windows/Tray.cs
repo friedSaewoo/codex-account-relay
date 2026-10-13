@@ -15,6 +15,7 @@ internal sealed class RelayTray : ApplicationContext
     readonly string state;
     readonly JavaScriptSerializer json = new JavaScriptSerializer();
     readonly NotifyIcon icon = new NotifyIcon();
+    readonly Icon appIcon = LoadAppIcon();
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     readonly Queue<DateTime> crashes = new Queue<DateTime>();
     readonly ToolStripMenuItem heading = new ToolStripMenuItem("시작 중…");
@@ -69,7 +70,7 @@ internal sealed class RelayTray : ApplicationContext
         menu.Items.Add("사용 방법", null, delegate { Process.Start(new ProcessStartInfo(Path.Combine(root, "README.txt")) { UseShellExecute = true }); });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("종료 (열린 Codex는 재시작 필요)", null, delegate { BeginExit(); });
-        icon.Icon = SystemIcons.Application;
+        icon.Icon = appIcon;
         icon.Text = "Codex 계정 자동 관리";
         icon.ContextMenuStrip = menu;
         menu.Opening += delegate { UpdateTrayUsage(Read(Path.Combine(state, "manager-status.json"))); };
@@ -171,7 +172,7 @@ internal sealed class RelayTray : ApplicationContext
         heading.Text = label; icon.Text = label.Length > 63 ? label.Substring(0, 63) : label;
         string mode = Text(s, "mode"); autoItem.Checked = mode == "auto"; proItem.Checked = mode == "pro"; offItem.Checked = mode == "off";
         string attention = Text(s, "attention");
-        icon.Icon = attention.Length > 0 || recoveryStopped ? SystemIcons.Warning : SystemIcons.Application;
+        icon.Icon = attention.Length > 0 || recoveryStopped ? SystemIcons.Warning : appIcon;
         if (attention.Length > 0) Notice(attention, label, Text(s, "detail"));
         UpdateTrayUsage(s);
         UpdateStatus(s);
@@ -208,6 +209,13 @@ internal sealed class RelayTray : ApplicationContext
         lastNotice = key;
         try { File.WriteAllText(Path.Combine(state, "last-notice.json"), json.Serialize(new Dictionary<string, object> { { "key", key } }), new UTF8Encoding(false)); } catch { }
         icon.ShowBalloonTip(7000, title, detail, ToolTipIcon.Warning);
+    }
+    static Icon LoadAppIcon()
+    {
+        using (var stream = typeof(RelayTray).Assembly.GetManifestResourceStream("RelayIcon")) {
+            if (stream == null) return (Icon)SystemIcons.Application.Clone();
+            using (var embedded = new Icon(stream, new Size(32, 32))) return (Icon)embedded.Clone();
+        }
     }
     void UpdateStatus(Dictionary<string, object> s)
     {
@@ -329,7 +337,7 @@ internal sealed class RelayTray : ApplicationContext
         }
         resetIndex = index;
         string name = index == 0 ? "Business" : "Pro";
-        resetDialog = new Form { Text = name + " · 사용한도 초기화", ClientSize = new Size(426, 314), StartPosition = FormStartPosition.CenterParent,
+        resetDialog = new Form { Text = name + " · 사용한도 초기화", Icon = appIcon, ClientSize = new Size(426, 314), StartPosition = FormStartPosition.CenterParent,
             FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = new Font("Malgun Gothic", 10), BackColor = Color.White };
         resetCountLabel = new Label { Left = 20, Top = 18, Width = 180, Height = 26 };
         resetCheckedLabel = new Label { Left = 222, Top = 22, Width = 184, Height = 22, Font = new Font("Malgun Gothic", 9), TextAlign = ContentAlignment.TopRight };
@@ -382,7 +390,7 @@ internal sealed class RelayTray : ApplicationContext
     void ShowStatus()
     {
         if (window != null && !window.IsDisposed) { window.Hide(); window.Show(); window.WindowState = FormWindowState.Normal; window.Activate(); return; }
-        window = new Form { Text = "Codex 계정 자동 관리", ClientSize = new Size(664, 431), StartPosition = FormStartPosition.CenterScreen,
+        window = new Form { Text = "Codex 계정 자동 관리", Icon = appIcon, ClientSize = new Size(664, 431), StartPosition = FormStartPosition.CenterScreen,
             FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, Font = new Font("Malgun Gothic", 10), BackColor = Color.White };
         statusLabel = new Label { Left = 24, Top = 18, Width = 616, Height = 28 };
         window.Controls.Add(statusLabel);
@@ -424,6 +432,7 @@ internal sealed class RelayTray : ApplicationContext
         timer.Stop(); icon.Visible = false; icon.Dispose();
         if (window != null) window.Dispose();
         if (resetDialog != null) resetDialog.Dispose();
+        appIcon.Dispose();
         base.ExitThreadCore();
     }
     [STAThread]

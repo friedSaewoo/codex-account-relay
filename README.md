@@ -2,6 +2,8 @@
 
 Codex Windows 앱에 **Pro로 로그인한 상태와 기존 대화를 유지하면서, 모델 요청에 Business 계정을 먼저 사용하는** 개인용 Windows 트레이 앱입니다. Business 한도가 소진되면 Pro로 자동 전환합니다.
 
+<img src="assets/app-icon/relay.png" width="64" alt="Business와 Pro 자동 전환 아이콘">
+
 ## 주요 기능
 
 - Business 우선 / Pro만 사용 / 기본 연결 복구.
