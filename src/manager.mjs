@@ -35,6 +35,10 @@ async function refreshUsage(force = false) {
   usagePending = (async () => {
     const results = await Promise.all([readProUsage(force), readBusinessUsage(force), resets.pro.read(force), resets.business.read(force)]);
     usage = { pro: results[0], business: results[1] };
+    if (!shuttingDown && desktopReady && businessAllowed({ mode: settings.mode, compatibility, businessRetryAt, loginInProgress })) {
+      try { await relay.resumeBusinessFromUsage(usage.business); }
+      catch { audit({ event: 'business_quota_recovery_check_failed' }); }
+    }
     if (!shuttingDown) await publish();
   })();
   try { await usagePending; } catch { audit({ event: 'usage_refresh_failed' }); } finally { usagePending = null; }

@@ -1,4 +1,4 @@
-import { isPro, isBusiness } from './credentials.mjs';
+import { isPro, isBusiness, fingerprint } from './credentials.mjs';
 
 function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
 export function usageWindow(value) {
@@ -12,13 +12,26 @@ export function usageWindow(value) {
 }
 export function normalizeUsage(raw, now = Date.now()) {
   const limits = raw?.rate_limit;
+  const providedWindows = [limits?.primary_window, limits?.secondary_window].filter(value => value != null);
   return {
     updatedAt: new Date(now).toISOString(),
     plan: typeof raw?.plan_type === 'string' ? raw.plan_type : 'unknown',
     allowed: typeof limits?.allowed === 'boolean' ? limits.allowed : null,
     limitReached: typeof limits?.limit_reached === 'boolean' ? limits.limit_reached : null,
     windows: [usageWindow(limits?.primary_window), usageWindow(limits?.secondary_window)].filter(Boolean),
+    windowsValid: providedWindows.length > 0 && providedWindows.every(value => finite(value.used_percent) && value.used_percent >= 0 && value.used_percent <= 100),
   };
+}
+export function usageProvesBusinessRecovery(usage, quota, accountKey, now = Date.now()) {
+  const queriedAt = Date.parse(usage?.queriedAt);
+  return !!quota && Number.isFinite(quota.blockedAt) &&
+    Number.isFinite(queriedAt) && queriedAt > quota.blockedAt && queriedAt <= now && now - queriedAt < 360000 &&
+    usage.stale === false && !usage.error && isBusiness({ plan: usage.plan }) &&
+    typeof accountKey === 'string' && /^[a-f0-9]{64}$/.test(accountKey) && usage.accountKey === accountKey && (!quota.accountKey || quota.accountKey === accountKey) &&
+    usage.allowed === true && usage.limitReached === false &&
+    usage.windowsValid === true &&
+    Array.isArray(usage.windows) && usage.windows.length > 0 &&
+    usage.windows.every(window => finite(window.remainingPercent) && window.remainingPercent > 0 && window.remainingPercent <= 100);
 }
 export function usageReader({ getCredential, role, fetchImpl = fetch, now = Date.now, minIntervalMs = 30000 }) {
   let pending, lastAttempt = 0, snapshot = null;
@@ -26,6 +39,7 @@ export function usageReader({ getCredential, role, fetchImpl = fetch, now = Date
     if (pending) return pending;
     if (lastAttempt && now() - lastAttempt < (force ? minIntervalMs : 300000)) return snapshot;
     lastAttempt = now();
+    const queriedAt = new Date(lastAttempt).toISOString();
     pending = (async () => {
       let error = '사용량 조회 실패 · 다시 새로고침해주세요.';
       try {
@@ -48,7 +62,7 @@ export function usageReader({ getCredential, role, fetchImpl = fetch, now = Date
           snapshot = null;
           throw new Error('Usage workspace mismatch.');
         }
-        snapshot = { ...normalizeUsage(data, now()), lastAttemptAt: new Date(now()).toISOString(), stale: false, error: null };
+        snapshot = { ...normalizeUsage(data, now()), queriedAt, accountKey: fingerprint(credential.accountId), lastAttemptAt: new Date(now()).toISOString(), stale: false, error: null };
       } catch {
         snapshot = { ...(snapshot || { windows: [], updatedAt: null }), lastAttemptAt: new Date(now()).toISOString(), stale: true, error };
       }

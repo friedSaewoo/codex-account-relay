@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeUsage, usageWindow, usageReader } from '../src/usage.mjs';
+import { normalizeUsage, usageWindow, usageReader, usageProvesBusinessRecovery } from '../src/usage.mjs';
+import { fingerprint } from '../src/credentials.mjs';
 
 const now = 1791854000000;
 const raw = { email: 'private@example.invalid', user_id: 'private-user', account_id: 'private-account', plan_type: 'team', rate_limit: { allowed: true, limit_reached: false, primary_window: { used_percent: 28, limit_window_seconds: 18000, reset_at: 1791868971 }, secondary_window: { used_percent: 4, limit_window_seconds: 604800, reset_at: 1792393411 } } };
@@ -57,4 +58,38 @@ test('wrong credential role does not query another workspace or silently label i
   const reader = usageReader({ role: 'pro', getCredential: async () => credential, now: () => now, fetchImpl: async () => { calls++; } });
   const result = await reader(); assert.equal(calls, 0); assert.equal(result.stale, true);
   assert.deepEqual(result.windows, []); assert.match(result.error, /Pro/);
+});
+
+test('recovery requires a new successful Business query for the same account with every reported window available', () => {
+  const key = fingerprint(credential.accountId), quota = { blockedAt: now - 1000, accountKey: key };
+  const restored = { ...normalizeUsage(raw, now), queriedAt: new Date(now - 100).toISOString(), accountKey: key, stale: false, error: null };
+  assert.equal(usageProvesBusinessRecovery(restored, quota, key, now), true);
+  for (const changed of [
+    { stale: true }, { error: 'failed' }, { allowed: null }, { allowed: false }, { limitReached: true }, { limitReached: null },
+    { windows: [] }, { windows: [{ remainingPercent: 0 }] }, { windows: [{ remainingPercent: null }] },
+    { windowsValid: false }, { queriedAt: null }, { queriedAt: new Date(now - 2000).toISOString() },
+    { queriedAt: new Date(now + 100).toISOString() }, { queriedAt: new Date(now - 400000).toISOString() },
+    { accountKey: fingerprint('another-business') }, { plan: 'pro' }, { plan: 'unknown' },
+  ]) assert.equal(usageProvesBusinessRecovery({ ...restored, ...changed }, quota, key, now), false, JSON.stringify(changed));
+  assert.equal(usageProvesBusinessRecovery(restored, { ...quota, accountKey: fingerprint('other') }, key, now), false);
+  assert.equal(usageProvesBusinessRecovery(restored, { resetAt: now + 3600000 }, key, now), false);
+});
+
+test('usage query timestamp is its start, not completion; older in-flight queries cannot undo later exhaustion', async () => {
+  let clock = now, release;
+  const reader = usageReader({ role: 'business', getCredential: async () => credential, now: () => clock, fetchImpl: async () => {
+    await new Promise(resolve => { release = resolve; }); return { ok: true, json: async () => raw };
+  } });
+  const pending = reader(); await new Promise(resolve => setImmediate(resolve));
+  clock += 2000; const blockedAt = clock; clock += 1000; release();
+  const result = await pending;
+  assert.equal(Date.parse(result.queriedAt), now); assert.equal(Date.parse(result.updatedAt), clock);
+  assert.equal(usageProvesBusinessRecovery(result, { blockedAt }, fingerprint(credential.accountId), clock), false);
+});
+
+test('malformed reported windows remain unsuitable for automatic recovery even when UI percentages are clamped', () => {
+  for (const window of [{ used_percent: null }, { used_percent: -1 }, { used_percent: 110 }]) {
+    const result = normalizeUsage({ ...raw, rate_limit: { ...raw.rate_limit, secondary_window: window } }, now);
+    assert.equal(result.windowsValid, false);
+  }
 });

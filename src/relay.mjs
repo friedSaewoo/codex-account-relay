@@ -3,6 +3,7 @@ import https from 'node:https';
 import { timingSafeEqual, createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { gunzipSync, inflateSync, brotliDecompressSync, zstdDecompressSync } from 'node:zlib';
+import { usageProvesBusinessRecovery } from './usage.mjs';
 
 const PREFIX = '/backend-api/codex';
 const MODEL_ROUTES = new Set([`${PREFIX}/responses`, `${PREFIX}/responses/compact`]);
@@ -58,7 +59,8 @@ function response(res, status, code) {
 export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuota = null, persistQuota = async () => {}, upstream = 'https://chatgpt.com', allowTestUpstream = false, maxBody = 64 * 1024 * 1024, timeoutMs = 180000, fallbackOnBusinessAuthError = false, unknownQuotaRetryMs = 0, passThroughCodexRoutes = false }) {
   const base = new URL(upstream);
   if (base.origin !== 'https://chatgpt.com' && !(allowTestUpstream && base.hostname === '127.0.0.1' && base.protocol === 'http:')) throw new Error('Untrusted upstream.');
-  let quota = initialQuota;
+  // Old state without a rejection timestamp requires a new query after this startup.
+  let quota = initialQuota ? { ...initialQuota, blockedAt: Number.isFinite(initialQuota.blockedAt) ? initialQuota.blockedAt : Date.now() } : null;
   let completed = 0;
   const stats = { requests: 0, business: 0, pro: 0, modelBusiness: 0, modelPro: 0, auxiliaryPro: 0, compactBusiness: 0, compactPro: 0, modelInFlight: 0, lastModelRoute: null, lastModel: null, fallbacks: 0, upgradesRejected: 0, lastRoute: null, lastStatus: null };
   const emit = entry => { try { audit({ at: new Date().toISOString(), ...entry }); } catch {} };
@@ -169,7 +171,7 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
           const errorBody = await readBounded(upstreamResponse, 65536);
           const failure = quotaFailure(errorBody, upstreamResponse.headers);
           if (failure) {
-            quota = failure;
+            quota = { ...failure, blockedAt: Date.now(), accountKey: digest(credentials.accountId).toString('hex') };
             if (!quota.resetAt && unknownQuotaRetryMs > 0) quota.resetAt = Date.now() + unknownQuotaRetryMs;
             await persistQuota(quota);
             stats.fallbacks++;
@@ -209,7 +211,18 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
     } catch { socket.destroy(); }
   });
   server.on('clientError', (_error, socket) => socket.destroy());
-  return { server, getStatus, resetQuota: async () => { quota = null; await persistQuota(null); }, listen: (port = 19565) => new Promise((resolve, reject) => {
+  async function resumeBusinessFromUsage(usage) {
+    const observed = quota;
+    if (!getStatus().businessBlocked) return false;
+    const business = await getBusiness();
+    if (!business || quota !== observed || !usageProvesBusinessRecovery(usage, observed, digest(business.accountId).toString('hex'))) return false;
+    quota = null;
+    try { await persistQuota(null); }
+    catch (error) { if (quota === null) quota = observed; throw error; }
+    emit({ event: 'business_quota_recovered', source: 'usage_query' });
+    return true;
+  }
+  return { server, getStatus, resumeBusinessFromUsage, resetQuota: async () => { quota = null; await persistQuota(null); }, listen: (port = 19565) => new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => { server.removeListener('error', reject); resolve(server.address().port); });
   }), close: ({ force = true } = {}) => new Promise(resolve => { if (force) server.closeAllConnections(); server.close(resolve); }) };

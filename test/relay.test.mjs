@@ -5,6 +5,8 @@ import net from 'node:net';
 import { gzipSync } from 'node:zlib';
 import { createRelay, quotaFailure } from '../src/relay.mjs';
 import { addConfig, removeConfig } from '../src/config.mjs';
+import { fingerprint } from '../src/credentials.mjs';
+import { usageReader } from '../src/usage.mjs';
 
 const pro = { token: 'pro-secret', accountId: 'pro-workspace' };
 const business = { token: 'business-secret', accountId: 'business-workspace' };
@@ -46,6 +48,59 @@ test('exact quota failure switches once to Pro and blocks Business on later requ
   assert.deepEqual(x.seen.map(x => x.headers.authorization), ['Bearer business-secret', 'Bearer pro-secret', 'Bearer pro-secret']);
   assert(persisted.resetAt > Date.now());
   assert.equal(x.relay.getStatus().fallbacks, 1);
+});
+
+const availableBusinessUsage = (queriedAt = Date.now()) => ({
+  plan: 'team', allowed: true, limitReached: false, stale: false, error: null, windowsValid: true,
+  queriedAt: new Date(queriedAt).toISOString(), accountKey: fingerprint(business.accountId), windows: [{ remainingPercent: 100 }],
+});
+test('fresh restored usage clears early exhaustion for the next request without a probe or reset-credit request', async t => {
+  let exhausted = true, persisted;
+  const x = await setup(t, (req, res) => exhausted && req.headers.authorization.includes('business') ? limit(res) : ok(req, res), { persistQuota: async q => { persisted = q; } });
+  await (await x.call()).text(); assert.equal(x.relay.getStatus().businessBlocked, true);
+  exhausted = false; await new Promise(resolve => setTimeout(resolve, 3));
+  let usageCalls = 0;
+  const reader = usageReader({ role: 'business', getCredential: async () => ({ ...business, plan: 'team' }), fetchImpl: async () => {
+    usageCalls++; return { ok: true, json: async () => ({ plan_type: 'team', rate_limit: { allowed: true, limit_reached: false, primary_window: { used_percent: 0, limit_window_seconds: 18000 } } }) };
+  } });
+  const before = x.seen.length;
+  assert.equal(await x.relay.resumeBusinessFromUsage(await reader()), true);
+  assert.equal(usageCalls, 1); assert.equal(x.seen.length, before); assert.equal(persisted, null);
+  await (await x.call()).text();
+  assert.deepEqual(x.seen.map(req => req.headers.authorization), ['Bearer business-secret', 'Bearer pro-secret', 'Bearer business-secret']);
+});
+
+test('recovery leaves accepted Pro output running and applies only to a later Business request', async t => {
+  let finish;
+  const x = await setup(t, (req, res) => {
+    if(req.headers.authorization.includes('pro')) { res.writeHead(200); res.write('first'); finish = () => res.end('complete'); }
+    else ok(req,res);
+  }, { initialQuota: { resetAt: Date.now()+3600000, blockedAt: Date.now()-1000, accountKey: fingerprint(business.accountId) } });
+  const response = await x.call();
+  assert.equal(await x.relay.resumeBusinessFromUsage(availableBusinessUsage(Date.now()-100)), true);
+  assert.equal(x.seen.length, 1); finish(); assert.equal(await response.text(), 'firstcomplete');
+  await (await x.call()).text(); assert.equal(x.seen[1].headers.authorization, 'Bearer business-secret');
+});
+
+test('new exhaustion during recovery persistence stays blocked instead of being erased by the older recovery', async t => {
+  let releaseWrite;
+  const x = await setup(t, (req,res) => req.headers.authorization.includes('business') ? limit(res) : ok(req,res), {
+    initialQuota: { resetAt: Date.now()+3600000, blockedAt: Date.now()-1000, accountKey: fingerprint(business.accountId) },
+    persistQuota: async value => { if(value===null) await new Promise(resolve => { releaseWrite=resolve; }); },
+  });
+  const recovering = x.relay.resumeBusinessFromUsage(availableBusinessUsage(Date.now()-100));
+  await new Promise(resolve => setImmediate(resolve));
+  await (await x.call()).text(); assert.equal(x.relay.getStatus().businessBlocked, true);
+  releaseWrite(); await recovering; assert.equal(x.relay.getStatus().businessBlocked, true);
+  await (await x.call()).text(); assert.equal(x.seen.at(-1).headers.authorization, 'Bearer pro-secret');
+});
+
+test('legacy cache needs a query after restart and failed persistence retains its wait', async t => {
+  const x = await setup(t, ok, { initialQuota: { resetAt: Date.now()+3600000 }, persistQuota: async () => { throw new Error('disk unavailable'); } });
+  assert.equal(await x.relay.resumeBusinessFromUsage(availableBusinessUsage(Date.now()-100)), false);
+  await new Promise(resolve => setTimeout(resolve,3));
+  await assert.rejects(x.relay.resumeBusinessFromUsage(availableBusinessUsage()), /disk unavailable/);
+  assert.equal(x.relay.getStatus().businessBlocked,true);
 });
 for (const [status, type] of [[429, 'rate_limit_exceeded'], [401, 'invalid_token'], [403, 'workspace_policy'], [500, 'usage_limit_reached']]) {
   test(`${status} ${type} does not switch accounts`, async t => {
