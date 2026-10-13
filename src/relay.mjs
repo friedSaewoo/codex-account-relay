@@ -82,8 +82,16 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
     let upstreamResponse;
     let aborted = false;
     let countedModel = false;
+    const startedAt = Date.now();
+    let disconnectOrigin = null, transportCode = null, upstreamBytes = 0, forwardedRoute = null;
+    const noteDisconnect = (origin, error) => {
+      if (!disconnectOrigin) disconnectOrigin = origin;
+      if (!transportCode && typeof error?.code === 'string' && /^[A-Z0-9_]{1,48}$/.test(error.code)) transportCode = error.code;
+    };
+    res.once('error', error => noteDisconnect('client_write', error));
     res.on('close', () => {
       if (res.writableFinished) return;
+      noteDisconnect('client_close');
       aborted = true;
       upstreamRequest?.destroy();
       upstreamResponse?.destroy();
@@ -136,6 +144,7 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
       // Only a rejected quota request or opt-in authentication rejection unlocks attempt 2.
       for (let attempt = 0; attempt < 2; attempt++) {
         if (aborted) return;
+        forwardedRoute = chosen;
         stats[chosen]++;
         stats.lastRoute = chosen;
         if (model) {
@@ -154,8 +163,11 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
         upstreamResponse = await new Promise((resolve, reject) => {
           // Destination stays fixed even if a client submits an unusual request target.
           upstreamRequest = transport.request(new URL(url.pathname + url.search, base), { method: req.method, headers }, resolve);
-          upstreamRequest.setTimeout(timeoutMs, () => upstreamRequest.destroy(new Error('Upstream timeout.')));
-          upstreamRequest.on('error', reject);
+          upstreamRequest.setTimeout(timeoutMs, () => {
+            noteDisconnect('upstream_timeout', { code: 'ETIMEDOUT' });
+            upstreamRequest.destroy(new Error('Upstream timeout.'));
+          });
+          upstreamRequest.on('error', error => { noteDisconnect('upstream_connection', error); reject(error); });
           upstreamRequest.end(body);
         });
         const status = upstreamResponse.statusCode;
@@ -184,6 +196,11 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
           res.writeHead(status, cleanHeaders(upstreamResponse.headers));
           res.end(errorBody);
         } else {
+          // Record which side first interrupted the stream. pipeline may then close both sides.
+          // Observe byte counts only; do not parse, buffer, rewrite or log response contents.
+          upstreamResponse.once('aborted', () => noteDisconnect('upstream_stream'));
+          upstreamResponse.once('error', error => noteDisconnect('upstream_stream', error));
+          upstreamResponse.on('data', chunk => { upstreamBytes += chunk.length; });
           res.writeHead(status, cleanHeaders(upstreamResponse.headers));
           res.flushHeaders();
           // No parsing/replay of accepted output: tool calls, SSE errors, and partial streams stay single-shot.
@@ -194,7 +211,13 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
       }
     } catch (error) {
       const desktopError = ['DESKTOP_PRO_REQUIRED', 'DESKTOP_AUTH_UNAVAILABLE'].includes(error.code);
-      emit({ event: aborted ? 'client_closed' : 'relay_error', id, code: error.code === 'BODY_LIMIT' ? 'body_limit' : aborted ? 'client_disconnected' : desktopError ? error.code.toLowerCase() : 'transport_or_credential_error' });
+      const upstreamFailure = disconnectOrigin?.startsWith('upstream');
+      const encoding = upstreamResponse?.headers['content-encoding'] || 'identity';
+      emit({ event: upstreamFailure ? 'upstream_error' : aborted ? 'client_closed' : 'relay_error', id,
+        code: error.code === 'BODY_LIMIT' ? 'body_limit' : upstreamFailure ? 'upstream_transport_error' : aborted ? 'client_disconnected' : desktopError ? error.code.toLowerCase() : 'transport_or_credential_error',
+        origin: disconnectOrigin || 'relay', transportCode, route: forwardedRoute, durationMs: Date.now() - startedAt,
+        upstreamBytes, upstreamHttpComplete: upstreamResponse?.complete === true,
+        upstreamEncoding: ['identity', 'gzip', 'br', 'deflate', 'zstd'].includes(encoding) ? encoding : 'other' });
       upstreamRequest?.destroy();
       upstreamResponse?.destroy();
       response(res, error.code === 'BODY_LIMIT' ? 413 : desktopError ? 409 : 502, error.code === 'BODY_LIMIT' ? 'relay_body_limit' : desktopError ? `relay_${error.code.toLowerCase()}` : 'relay_upstream_failed');

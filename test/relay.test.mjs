@@ -131,6 +131,29 @@ test('quota error after successful stream has begun never replays', async t => {
 test('abrupt stream disconnect never replays', async t => {
   const x = await setup(t, (_req, res) => { res.writeHead(200); res.write('partial'); setTimeout(() => res.destroy(), 30); });
   const r = await x.call(); await assert.rejects(r.text()); assert.equal(x.seen.length, 1);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const failure = x.events.find(event => event.event === 'upstream_error');
+  assert.equal(failure.origin, 'upstream_stream'); assert.equal(failure.upstreamHttpComplete, false);
+  assert.equal(failure.upstreamBytes, Buffer.byteLength('partial'));
+});
+
+test('client cancellation stays distinct from upstream failure even when cancellation destroys the upstream too', async t => {
+  const x = await setup(t, (_req, res) => { res.writeHead(200); res.write('first'); });
+  const r = await x.call(); const reader = r.body.getReader(); await reader.read(); await reader.cancel();
+  const deadline = Date.now() + 1000;
+  while (!x.events.some(event => event.event === 'client_closed') && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve,10));
+  const failure = x.events.find(event => event.event === 'client_closed');
+  assert.equal(failure.origin, 'client_close'); assert.equal(x.seen.length, 1);
+  assert.equal(x.events.some(event => event.event === 'upstream_error'), false);
+});
+
+test('upstream idle timeout is recorded separately without replay or exposing payload', async t => {
+  const x = await setup(t, (_req,res) => { res.writeHead(200); res.write('private answer'); }, { timeoutMs: 60 });
+  const r = await x.call(); await assert.rejects(r.text());
+  await new Promise(resolve => setTimeout(resolve,10));
+  const failure = x.events.find(event => event.event === 'upstream_error');
+  assert.equal(failure.origin,'upstream_timeout'); assert.equal(failure.transportCode,'ETIMEDOUT');
+  assert.equal(x.seen.length,1); assert(!JSON.stringify(x.events).includes('private answer'));
 });
 test('graceful shutdown preserves an active response through completion without replay', async t => {
   let finish;
