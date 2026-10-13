@@ -18,6 +18,9 @@ internal sealed class RelayTray : ApplicationContext
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     readonly Queue<DateTime> crashes = new Queue<DateTime>();
     readonly ToolStripMenuItem heading = new ToolStripMenuItem("시작 중…");
+    readonly ToolStripMenuItem businessUsageItem = new ToolStripMenuItem("Business · 조회 중…");
+    readonly ToolStripMenuItem proUsageItem = new ToolStripMenuItem("Pro · 조회 중…");
+    readonly ToolStripMenuItem usageCheckedItem = new ToolStripMenuItem("사용량 조회 중…");
     readonly ToolStripMenuItem autoItem = new ToolStripMenuItem("Business 우선 · 자동 전환");
     readonly ToolStripMenuItem proItem = new ToolStripMenuItem("Pro만 사용");
     readonly ToolStripMenuItem offItem = new ToolStripMenuItem("자동 관리 끄기 · 기본 연결 복구");
@@ -48,6 +51,11 @@ internal sealed class RelayTray : ApplicationContext
         var menu = new ContextMenuStrip();
         heading.Enabled = false;
         menu.Items.Add(heading);
+        businessUsageItem.Click += delegate { ShowStatus(); };
+        proUsageItem.Click += delegate { ShowStatus(); };
+        usageCheckedItem.Enabled = false;
+        menu.Items.AddRange(new ToolStripItem[] { businessUsageItem, proUsageItem, usageCheckedItem });
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("상태 보기", null, delegate { ShowStatus(); });
         menu.Items.Add(new ToolStripSeparator());
         autoItem.Click += delegate { Mode("auto"); };
@@ -64,6 +72,7 @@ internal sealed class RelayTray : ApplicationContext
         icon.Icon = SystemIcons.Application;
         icon.Text = "Codex 계정 자동 관리";
         icon.ContextMenuStrip = menu;
+        menu.Opening += delegate { UpdateTrayUsage(Read(Path.Combine(state, "manager-status.json"))); };
         icon.DoubleClick += delegate { ShowStatus(); };
         icon.BalloonTipClicked += delegate { ShowStatus(); };
         icon.Visible = true;
@@ -164,7 +173,34 @@ internal sealed class RelayTray : ApplicationContext
         string attention = Text(s, "attention");
         icon.Icon = attention.Length > 0 || recoveryStopped ? SystemIcons.Warning : SystemIcons.Application;
         if (attention.Length > 0) Notice(attention, label, Text(s, "detail"));
+        UpdateTrayUsage(s);
         UpdateStatus(s);
+    }
+    void UpdateTrayUsage(Dictionary<string, object> status)
+    {
+        var usage = Object(status, "usage");
+        var business = Object(usage, "business"); var pro = Object(usage, "pro");
+        businessUsageItem.Text = UsageMenuText("Business", business);
+        proUsageItem.Text = UsageMenuText("Pro", pro);
+        usageCheckedItem.Text = "조회 · Business " + LocalTime(Text(business, "updatedAt")) + " / Pro " + LocalTime(Text(pro, "updatedAt"));
+    }
+    static string UsageMenuText(string account, Dictionary<string, object> value)
+    {
+        var parts = new List<string>(); object windows;
+        if (value.TryGetValue("windows", out windows) && windows is System.Collections.IEnumerable) {
+            foreach (object item in (System.Collections.IEnumerable)windows) {
+                var row = item as Dictionary<string, object>;
+                double remaining;
+                if (row == null || !Double.TryParse(Text(row, "remainingPercent"), out remaining)) continue;
+                double seconds = Number(row, "durationSeconds");
+                string period = seconds == 604800 ? "주간" : seconds == 18000 ? "5시간" : seconds >= 86400 ? (seconds / 86400).ToString("0.#") + "일" : seconds > 0 ? (seconds / 3600).ToString("0.#") + "시간" : "한도";
+                parts.Add(period + " " + Math.Max(0, Math.Min(100, remaining)).ToString("0.#") + "%");
+            }
+        }
+        if (parts.Count == 0) return account + " · " + (Text(value, "error").Length > 0 ? "조회 실패" : Text(value, "updatedAt").Length > 0 ? "한도 정보 미제공" : "조회 중…");
+        DateTimeOffset updated;
+        bool stale = Text(value, "stale") == "True" || Text(value, "error").Length > 0 || !DateTimeOffset.TryParse(Text(value, "updatedAt"), out updated) || (DateTimeOffset.UtcNow - updated).TotalMinutes > 6;
+        return account + " 남음 · " + String.Join(" / ", parts.ToArray()) + (stale ? " (이전 조회 값)" : "");
     }
     void Notice(string key, string title, string detail)
     {

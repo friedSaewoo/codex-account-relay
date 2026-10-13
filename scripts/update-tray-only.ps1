@@ -26,7 +26,17 @@ Copy-Item -LiteralPath $appExe -Destination $backupExe
 Stop-Process -Id $trayProcesses[0].ProcessId -ErrorAction Stop
 Wait-Process -Id $trayProcesses[0].ProcessId -Timeout 10 -ErrorAction SilentlyContinue
 if (-not (Get-Process -Id $managerId -ErrorAction SilentlyContinue)) { throw 'The manager unexpectedly stopped; tray replacement was aborted.' }
-Copy-Item -LiteralPath $sourceExe -Destination $appExe -Force
+try {
+    $copyDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        try { Copy-Item -LiteralPath $sourceExe -Destination $appExe -Force; break }
+        catch { if ([DateTime]::UtcNow -ge $copyDeadline) { throw }; Start-Sleep -Milliseconds 250 }
+    } while ($true)
+} catch {
+    # Keep the old UI available if Windows has not released its executable lock.
+    Start-Process -FilePath $appExe -WorkingDirectory $appRoot -ArgumentList @('--show', "--attach-manager=$managerId") -WindowStyle Normal
+    throw
+}
 # The requested status window is interactive and must be visible.
 $newTray = Start-Process -FilePath $appExe -WorkingDirectory $appRoot -ArgumentList @('--show', "--attach-manager=$managerId") -WindowStyle Normal -PassThru
 Start-Sleep -Seconds 2

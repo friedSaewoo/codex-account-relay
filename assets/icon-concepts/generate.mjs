@@ -1,0 +1,18 @@
+// Code-native vector concepts; no generated bitmap logos or external icon assets.
+import { writeFile } from 'node:fs/promises';
+const concepts = [
+  { id: '01-link', name: '연결 고리', desc: '두 계정을 한 흐름으로 연결', shape: '<g fill="none" stroke-width="5" stroke-linecap="round"><path stroke="#0d9488" d="M17 11h-3a9 9 0 0 0 0 18h3"/><path stroke="#2563eb" d="M23 11h3a9 9 0 0 1 0 18h-3"/><path stroke="#334155" d="M15 20h10"/></g>' },
+  { id: '02-switch', name: '자동 전환', desc: 'Business에서 Pro로 매끄럽게 전환', shape: '<path fill="#0d9488" d="M7 8h21V3l9 9-9 9v-5H7z"/><path fill="#2563eb" d="M33 32H12v5l-9-9 9-9v5h21z"/>' },
+  { id: '03-route', name: '중계 분기', desc: '한 앱에서 두 계정으로 요청 전달', shape: '<path d="M9 20h9q5 0 5-8V9m-5 11q5 0 5 8v3" fill="none" stroke="#334155" stroke-width="4" stroke-linecap="round"/><circle cx="8" cy="20" r="6" fill="#334155"/><circle cx="27" cy="9" r="7" fill="#0d9488"/><circle cx="27" cy="31" r="7" fill="#2563eb"/>' },
+  { id: '04-shield', name: '안전 중계', desc: '기존 로그인과 작업 흐름 유지', shape: '<path fill="#334155" d="M20 2 35 8v12c0 9-8 15-15 18C13 35 5 29 5 20V8z"/><path fill="#5eead4" d="m23 8-13 15h9l-2 10 13-16h-9z"/>' },
+  { id: '05-dual', name: '듀얼 계정', desc: 'Business와 Pro 상태를 한눈에', shape: '<rect x="3" y="5" width="23" height="25" rx="6" fill="#0d9488"/><rect x="14" y="10" width="23" height="25" rx="6" fill="#2563eb"/><path fill="white" d="m18 18 5 5-5 5v-4h-6v-3h6z"/>' },
+];
+for (const c of concepts) await writeFile(new URL(c.id + '.svg', import.meta.url), `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="256" height="256"><title>${c.name}</title>${c.shape}</svg>\n`);
+const stamp = (shape,x,y,size) => `<svg x="${x}" y="${y}" width="${size}" height="${size}" viewBox="0 0 40 40">${shape}</svg>`;
+let body = '<rect width="1400" height="720" fill="#f1f5f9"/><text x="54" y="72" font-size="32" font-weight="700" fill="#0f172a">Codex Account Relay · 아이콘 시안 5개</text><text x="54" y="111" font-size="17" fill="#64748b">큰 아이콘과 실제 트레이 크기 16 · 20 · 24px 비교 / 아직 앱 아이콘에는 적용하지 않았습니다.</text>';
+concepts.forEach((c,i)=>{ const x=54+i*260;
+  body+=`<rect x="${x}" y="152" width="244" height="510" rx="18" fill="white" stroke="#e2e8f0"/><text x="${x+22}" y="190" font-size="14" fill="#64748b">0${i+1}${i===1?' · 추천':''}</text>${stamp(c.shape,x+68,223,108)}<text x="${x+22}" y="388" font-size="23" font-weight="700" fill="#0f172a">${c.name}</text><text x="${x+22}" y="421" font-size="13" fill="#64748b">${c.desc}</text><text x="${x+22}" y="472" font-size="13" fill="#64748b">밝은 작업 표시줄</text><rect x="${x+16}" y="490" width="212" height="48" rx="8" fill="#eef2f6"/>${stamp(c.shape,x+44,506,16)}${stamp(c.shape,x+103,504,20)}${stamp(c.shape,x+164,502,24)}<text x="${x+22}" y="574" font-size="13" fill="#64748b">어두운 작업 표시줄</text><rect x="${x+16}" y="592" width="212" height="48" rx="8" fill="#1e293b"/>${stamp(c.shape.replaceAll('#334155','#cbd5e1'),x+44,608,16)}${stamp(c.shape.replaceAll('#334155','#cbd5e1'),x+103,606,20)}${stamp(c.shape.replaceAll('#334155','#cbd5e1'),x+164,604,24)}`;
+});
+await writeFile(new URL('preview.svg',import.meta.url),`<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="720" viewBox="0 0 1400 720" font-family="Malgun Gothic, sans-serif">${body}</svg>`);
+await writeFile(new URL('preview.html',import.meta.url),`<!doctype html><html lang="ko"><meta charset="utf-8"><title>아이콘 시안 5개</title><style>body{margin:0;background:#f1f5f9}img{display:block;width:100%;max-width:1400px;margin:auto}</style><img src="preview.svg" alt="Codex Account Relay 아이콘 5개 비교"></html>`);
+console.log('Five vector concepts and comparison preview saved.');
