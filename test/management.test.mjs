@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { businessAllowed, compatibilityPassed, needsCompatibilityCheck, validSettings, userStatus, assistantSaidMarker } from '../src/management.mjs';
+import { businessAllowed, compatibilityPassed, needsCompatibilityCheck, compatibilityRetryDelay, validSettings, userStatus, assistantSaidMarker } from '../src/management.mjs';
 test('unverified/new versions and authentication cooldown never send Business traffic', () => {
   assert(businessAllowed({ mode: 'auto', compatibility: 'passed' }));
   for (const change of [{ mode: 'off' }, { mode: 'pro' }, { compatibility: 'checking' }, { compatibility: 'failed' }, { loginInProgress: true }, { businessRetryAt: Date.now() + 60000 }]) {
@@ -20,6 +20,17 @@ test('same verified version does not repeatedly spend model quota; changed versi
   assert(needsCompatibilityCheck(cached, 'version-b'));
   assert(!needsCompatibilityCheck({ ...cached, result: 'failed', retryAt: Date.now() + 60000 }, 'version-a'));
   assert(needsCompatibilityCheck({ ...cached, result: 'failed', retryAt: Date.now() - 1 }, 'version-a'));
+});
+test('automatic compatibility retry handles transient failures soon and backs off repeated failures', () => {
+  const now = Date.now();
+  for (const [failures, delay] of [[1,120000],[2,600000],[3,3600000],[20,3600000]]) {
+    assert.equal(compatibilityRetryDelay(failures), delay);
+    const cached = { signature: 'engine-a', result: 'failed', failures, retryAt: now + delay };
+    assert.equal(needsCompatibilityCheck(cached, 'engine-a', now + delay - 1), false);
+    assert.equal(needsCompatibilityCheck(cached, 'engine-a', now + delay), true);
+    assert.equal(needsCompatibilityCheck(cached, 'engine-b', now), true);
+  }
+  assert.equal(needsCompatibilityCheck({signature:'engine-a',result:'passed',failures:0},'engine-a',now+3600000), false);
 });
 test('a marker in echoed input is not counted as a model response', () => {
   assert(!assistantSaidMarker('User: reply MARKER', 'MARKER'));

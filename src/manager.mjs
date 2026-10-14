@@ -6,7 +6,7 @@ import { createRelay } from './relay.mjs';
 import { desktopHome, stateHome, privateDirectory, readDesktopAuth, readBusiness, isPro, findCodex, fingerprint, loginBusiness } from './credentials.mjs';
 import { businessProvider, readJson, writeJson, quotaPath } from './store.mjs';
 import { enableConfig, disableConfig, removeConfig } from './config.mjs';
-import { validSettings, businessAllowed, compatibilityPassed, needsCompatibilityCheck, userStatus } from './management.mjs';
+import { validSettings, businessAllowed, compatibilityPassed, needsCompatibilityCheck, compatibilityRetryDelay, userStatus } from './management.mjs';
 import { usageReader } from './usage.mjs';
 import { resetManager } from './resets.mjs';
 
@@ -93,10 +93,11 @@ async function reconcileConfig() {
 async function checkCompatibility(force = false) {
   if (checkInProgress || loginInProgress || settings.mode === 'off' || !desktopReady) return;
   checkInProgress = true;
+  let signature;
   try {
     const executable = await findCodex();
     const info = await stat(executable);
-    const signature = fingerprint(`${executable}|${info.size}|${info.mtimeMs}|${protocolSignature}`);
+    signature = fingerprint(`${executable}|${info.size}|${info.mtimeMs}|${protocolSignature}`);
     lastEngine = { path: executable, signature };
     if (!force && !needsCompatibilityCheck(cachedCompatibility, signature)) {
       compatibility = cachedCompatibility.result;
@@ -110,13 +111,19 @@ async function checkCompatibility(force = false) {
     const report = await readJson(join(root, 'reports', 'live-cli.json'));
     const fresh = report && Date.parse(report.at) >= started - 1000;
     compatibility = exit === 0 && fresh && compatibilityPassed(report) ? 'passed' : 'failed';
-    cachedCompatibility = { signature, result: compatibility, checkedAt: new Date().toISOString(), retryAt: compatibility === 'passed' ? null : Date.now() + 60 * 60000 };
+    const failures = compatibility === 'passed' ? 0 : cachedCompatibility?.signature === signature ? (cachedCompatibility.failures || 0) + 1 : 1;
+    cachedCompatibility = { signature, result: compatibility, failures, checkedAt: new Date().toISOString(), retryAt: compatibility === 'passed' ? null : Date.now() + compatibilityRetryDelay(failures) };
     await writeJson(compatibilityPath, cachedCompatibility);
     audit({ event: `compatibility_${compatibility}` });
   } catch {
     compatibility = 'failed';
     // Throttle discovery/auth/network failures too, not just a completed failed probe.
     checkedAt = Date.now();
+    if (signature) {
+      const failures = cachedCompatibility?.signature === signature ? (cachedCompatibility.failures || 0) + 1 : 1;
+      cachedCompatibility = { signature, result: 'failed', failures, checkedAt: new Date().toISOString(), retryAt: Date.now() + compatibilityRetryDelay(failures) };
+      try { await writeJson(compatibilityPath, cachedCompatibility); } catch { }
+    }
     audit({ event: 'compatibility_unavailable' });
   } finally {
     checkInProgress = false;

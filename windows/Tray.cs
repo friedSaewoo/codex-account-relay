@@ -25,7 +25,8 @@ internal sealed class RelayTray : ApplicationContext
     readonly ToolStripMenuItem autoItem = new ToolStripMenuItem("Business 우선 · 자동 전환");
     readonly ToolStripMenuItem proItem = new ToolStripMenuItem("Pro만 사용");
     readonly ToolStripMenuItem offItem = new ToolStripMenuItem("자동 관리 끄기 · 기본 연결 복구");
-    Process manager;
+    readonly ToolStripMenuItem startupItem = new ToolStripMenuItem("Windows 로그인 시 자동 시작");
+    Process manager, startupChange;
     string node, lastNotice = "";
     bool exiting, recoveryStopped;
     DateTime startedAt, lastHealthyHeartbeatAt;
@@ -64,8 +65,10 @@ internal sealed class RelayTray : ApplicationContext
         offItem.Click += delegate { Mode("off"); };
         menu.Items.AddRange(new ToolStripItem[] { autoItem, proItem, offItem });
         menu.Items.Add(new ToolStripSeparator());
+        startupItem.Click += delegate { SetStartup(!startupItem.Checked); };
+        menu.Items.Add(startupItem);
         menu.Items.Add("Business 다시 로그인", null, delegate { Command("login", null); });
-        menu.Items.Add("호환성 다시 확인", null, delegate { Recover(); Command("check", null); });
+        menu.Items.Add("연결 다시 진단 (문제 시)", null, delegate { Recover(); Command("check", null); });
         menu.Items.Add("사용량 새로고침", null, delegate { Command("usage", null); ShowStatus(); });
         menu.Items.Add("사용 방법", null, delegate { Process.Start(new ProcessStartInfo(Path.Combine(root, "README.txt")) { UseShellExecute = true }); });
         menu.Items.Add(new ToolStripSeparator());
@@ -112,6 +115,18 @@ internal sealed class RelayTray : ApplicationContext
         File.Move(path + ".tmp", path);
     }
     void Mode(string mode) { Recover(); Command("mode", mode); }
+    void SetStartup(bool enable)
+    {
+        if (startupChange != null) return;
+        try {
+            startupChange = Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + Path.Combine(root, "scripts", "set-startup.ps1") + "\" -Mode " + (enable ? "enable" : "disable")) {
+                WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            });
+            startupItem.Enabled = false;
+            startupChange.OutputDataReceived += delegate { }; startupChange.ErrorDataReceived += delegate { };
+            startupChange.BeginOutputReadLine(); startupChange.BeginErrorReadLine();
+        } catch { if (startupChange != null) startupChange.Dispose(); startupChange = null; startupItem.Enabled = true; Notice("startup-change", "자동 시작 설정 실패", "사용 방법에서 자동 시작 설정을 확인해주세요."); }
+    }
     void Recover()
     {
         if (!recoveryStopped) return;
@@ -147,6 +162,10 @@ internal sealed class RelayTray : ApplicationContext
     }
     void Tick()
     {
+        if (startupChange != null && startupChange.HasExited) {
+            bool failed = startupChange.ExitCode != 0; startupChange.Dispose(); startupChange = null; startupItem.Enabled = true;
+            if (failed) Notice("startup-change", "자동 시작 설정 실패", "시작 프로그램 등록을 변경하지 못했습니다. 사용 방법에서 설정을 확인해주세요.");
+        }
         var s = Read(Path.Combine(state, "manager-status.json"));
         if (File.Exists(Path.Combine(state, "show-status.request"))) {
             try { File.Delete(Path.Combine(state, "show-status.request")); } catch { }
@@ -177,6 +196,7 @@ internal sealed class RelayTray : ApplicationContext
         if (label.Length == 0) label = "시작 중…";
         heading.Text = label; icon.Text = label.Length > 63 ? label.Substring(0, 63) : label;
         string mode = Text(s, "mode"); autoItem.Checked = mode == "auto"; proItem.Checked = mode == "pro"; offItem.Checked = mode == "off";
+        startupItem.Checked = Text(Read(Path.Combine(state, "installation.json")), "startupRegistered") == "True";
         string attention = Text(s, "attention");
         icon.Icon = attention.Length > 0 || recoveryStopped ? SystemIcons.Warning : appIcon;
         if (attention.Length > 0) Notice(attention, label, Text(s, "detail"));
@@ -428,7 +448,7 @@ internal sealed class RelayTray : ApplicationContext
         window.Controls.Add(metricsLabel);
         var autoButton = new Button { Text = "Business 우선", Left = 24, Top = 383, Width = 118, Height = 32 };
         var proButton = new Button { Text = "Pro만 사용", Left = 150, Top = 383, Width = 110, Height = 32 };
-        var checkButton = new Button { Text = "호환성 확인", Left = 268, Top = 383, Width = 118, Height = 32 };
+        var checkButton = new Button { Text = "연결 재진단", Left = 268, Top = 383, Width = 118, Height = 32 };
         var refreshButton = new Button { Text = "사용량 새로고침", Left = 394, Top = 383, Width = 140, Height = 32 };
         var closeButton = new Button { Text = "닫기", Left = 542, Top = 383, Width = 98, Height = 32 };
         autoButton.Click += delegate { Mode("auto"); }; proButton.Click += delegate { Mode("pro"); };

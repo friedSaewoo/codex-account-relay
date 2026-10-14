@@ -1,10 +1,13 @@
-param([switch]$RegisterWindowsStartup)
+param([switch]$RegisterWindowsStartup,[switch]$DisableWindowsStartup)
 $ErrorActionPreference = 'Stop'
 $sourceRoot = $PSScriptRoot
 $relayState = Join-Path $env:USERPROFILE '.codex-account-relay'
 $previousState = Join-Path $env:LOCALAPPDATA 'CodexAccountRelay'
 $appRoot = Join-Path $relayState 'app'
 $appExe = Join-Path $appRoot 'CodexAccountRelay.exe'
+if ($RegisterWindowsStartup -and $DisableWindowsStartup) { throw 'Choose either enabling or disabling Windows startup.' }
+$previousReceiptPath = Join-Path $relayState 'installation.json'
+$startupEnabled = if ($RegisterWindowsStartup) { $true } elseif ($DisableWindowsStartup) { $false } elseif (Test-Path -LiteralPath $previousReceiptPath) { [bool](Get-Content -LiteralPath $previousReceiptPath -Raw | ConvertFrom-Json).startupRegistered } else { $false }
 $nodeExe = (Get-Command node.exe).Source
 $authFile = Join-Path $env:USERPROFILE '.codex\auth.json'
 $authBefore = (Get-FileHash -LiteralPath $authFile -Algorithm SHA256).Hash
@@ -69,7 +72,7 @@ if ($resolvedExe.Trim() -ne $appExe) { throw 'Installation path was redirected; 
 $startupLink = Join-Path ([Environment]::GetFolderPath('Startup')) 'Codex Account Relay.lnk'
 $desktopLink = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Codex Account Relay.lnk'
 $shortcutPaths = @($desktopLink)
-if ($RegisterWindowsStartup) { $shortcutPaths += $startupLink }
+if ($startupEnabled) { $shortcutPaths += $startupLink }
 elseif (Test-Path -LiteralPath $startupLink) {
     $previousShortcut = $shortcutShell.CreateShortcut($startupLink)
     if ($previousShortcut.TargetPath -eq $appExe) { Remove-Item -LiteralPath $startupLink }
@@ -84,7 +87,7 @@ foreach ($linkPath in $shortcutPaths) {
     $link.Save()
 }
 $appVersion = (Get-Content -LiteralPath (Join-Path $sourceRoot 'package.json') -Raw | ConvertFrom-Json).version
-$receipt = @{installedAt=[DateTimeOffset]::UtcNow.ToString('o');appRoot=$appRoot;startupLink=$startupLink;desktopLink=$desktopLink;startupRegistered=[bool]$RegisterWindowsStartup;version=$appVersion;node=$nodeExe}
+$receipt = @{installedAt=[DateTimeOffset]::UtcNow.ToString('o');appRoot=$appRoot;startupLink=$startupLink;desktopLink=$desktopLink;startupRegistered=$startupEnabled;version=$appVersion;node=$nodeExe}
 [IO.File]::WriteAllText((Join-Path $relayState 'installation.json'), ($receipt | ConvertTo-Json), $utf8)
 # Ask Windows to launch the tray. ShellExecute alone does not guarantee an Explorer parent;
 # launching the desktop shortcut directly provides the separately verified user launch path.
@@ -92,4 +95,4 @@ $relayWindowsShell = New-Object -ComObject Shell.Application
 # The tray has no window at startup. A normal show flag lets its first requested status window appear.
 $relayWindowsShell.ShellExecute($appExe, '', $appRoot, 'open', 1)
 $unchanged = $authBefore -eq (Get-FileHash -LiteralPath $authFile -Algorithm SHA256).Hash
-@{installed=$true;desktopAuthUnchanged=$unchanged;startupRegistered=[bool]$RegisterWindowsStartup;app=$appExe} | ConvertTo-Json
+@{installed=$true;desktopAuthUnchanged=$unchanged;startupRegistered=$startupEnabled;app=$appExe} | ConvertTo-Json

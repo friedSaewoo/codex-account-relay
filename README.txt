@@ -81,11 +81,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 현재 사용자 폴더에 설치하고 바탕화면에 **Codex Account Relay** 바로가기를 만듭니다. 관리자 권한은 필요 없습니다. 실행 정책 옵션은 이 PowerShell 실행에만 적용됩니다.
 
-Windows 로그인 시 자동 시작하려면 다음 옵션을 추가합니다. 기본 설치는 자동 시작을 등록하지 않습니다.
+Windows 로그인 시 **트레이 아이콘으로 자동 시작**하려면 다음 옵션을 추가합니다. 상태 창은 자동으로 열지 않습니다. 첫 기본 설치는 자동 시작을 등록하지 않으며, 이후 재설치는 기존 설정을 보존합니다.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -RegisterWindowsStartup
 ```
+
+설치 후에도 트레이의 **Windows 로그인 시 자동 시작** 메뉴로 켜고 끌 수 있습니다. 중계나 Codex를 재시작하지 않고 설정만 변경합니다. PowerShell에서는 다음 명령을 사용할 수 있습니다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\set-startup.ps1 -Mode enable
+# 자동 시작 해제: 위 명령의 enable을 disable로 변경
+```
+
+재설치하면서 명시적으로 해제할 때는 `install.ps1 -DisableWindowsStartup`을 사용합니다.
 
 ### 5. 연결 켜기
 
@@ -95,7 +104,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -RegisterW
 4. Codex를 완전히 종료했다가 다시 엽니다. 로그인은 Pro로 유지합니다.
 5. 기존 대화에서 작업을 계속합니다. **최근 모델**과 **실제 모델 요청**에 전송 계정이 표시됩니다.
 
-매일 사용하는 순서는 **중계 실행 → Codex 실행**입니다. 자동 시작을 등록했다면 중계가 이미 실행 중인지 확인하면 됩니다. Codex와 함께 시작·종료하는 연동은 현재 제공하지 않습니다.
+자동 시작을 켰다면 **Windows 로그인 때 중계가 트레이로 실행되므로 평소에는 Codex만 여세요.** Codex의 기존 실행 경로를 바꾸거나 런처를 추가하지 않습니다. 자동 시작이 꺼져 있거나 트레이를 직접 종료한 경우에는 중계를 먼저 실행합니다. Windows 로그인 직후 두 앱의 시작 시점이 겹치면 중계 준비까지 잠시 걸릴 수 있습니다.
+
+Codex 업데이트 후에는 직접 호환성 버튼을 누를 필요가 없습니다. 실행 시와 약 2분 간격으로 내장 엔진 변경을 확인하고, 변경된 경우 자동 검사합니다. 같은 통과 버전은 모델 검사를 반복하지 않습니다. 검사 실패 시 기본 Pro 연결 복구를 시도한 뒤, 첫 실패는 약 2분 후 재검사하고 반복 실패는 10분·1시간으로 간격을 늘립니다. **연결 재진단** 버튼은 문제가 있을 때 수동으로 다시 확인하는 용도입니다. 검사에는 계정별 짧은 모델 요청이 포함될 수 있습니다.
 
 ## 사용량과 초기화권
 
