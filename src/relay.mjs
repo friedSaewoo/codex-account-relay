@@ -5,6 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { gunzipSync, inflateSync, brotliDecompressSync, zstdDecompressSync } from 'node:zlib';
 import { usageProvesBusinessRecovery } from './usage.mjs';
 import { safeError } from './diagnostics.mjs';
+import { createSseObserver } from './sse-diagnostics.mjs';
 
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000;
 
@@ -206,12 +207,15 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
           res.end(errorBody);
         } else {
           // Record which side first interrupted the stream. pipeline may then close both sides.
-          // Observe byte counts only; do not parse, buffer, rewrite or log response contents.
+          // Terminal metadata only; no error messages, text, IDs or unknown codes are logged.
+          const observableSse = String(upstreamResponse.headers['content-type'] || '').includes('text/event-stream') &&
+            ['identity', undefined].includes(upstreamResponse.headers['content-encoding']);
+          const observer = observableSse ? createSseObserver(terminal => emit({ event: 'sse_terminal', id, route: chosen, ...terminal })) : null;
           upstreamResponse.once('aborted', () => noteDisconnect('upstream_stream'));
-          upstreamResponse.on('data', chunk => { upstreamBytes += chunk.length; });
+          upstreamResponse.on('data', chunk => { upstreamBytes += chunk.length; observer?.write(chunk); });
           res.writeHead(status, cleanHeaders(upstreamResponse.headers));
           res.flushHeaders();
-          // No parsing/replay of accepted output: tool calls, SSE errors, and partial streams stay single-shot.
+          // Original bytes / backpressure / cancellation unchanged; accepted output stays single-shot.
           await pipeline(upstreamResponse, res);
         }
         completed++;

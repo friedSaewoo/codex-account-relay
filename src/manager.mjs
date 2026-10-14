@@ -19,7 +19,7 @@ const commandsPath = join(stateHome, 'commands');
 const port = Number(process.env.CODEX_RELAY_PORT || 19565);
 const diagnostics = createDiagnostics(join(stateHome, 'manager-errors.jsonl'), () => relay.getStatus());
 diagnostics.install();
-const protocolSignature = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', 'diagnostics.mjs', '../scripts/probe.mjs'].map(f => readFile(new URL(f, import.meta.url))))));
+const protocolSignature = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', 'diagnostics.mjs', 'sse-diagnostics.mjs', '../scripts/probe.mjs'].map(f => readFile(new URL(f, import.meta.url))))));
 let settings, compatibility = 'checking', cachedCompatibility, configActive = false, configError = false, desktopReady = false;
 let businessRetryAt = 0, needsLogin = false, loginInProgress = false, shuttingDown = false;
 let checkedAt = 0, lastEngine = null, checkInProgress = false, tickInProgress = false;

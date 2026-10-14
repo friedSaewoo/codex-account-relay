@@ -35,7 +35,7 @@ test('isolated manager restores normalized config on account change and reports 
   await writeJson(authPath, pro); await writeFile(configPath, original);
   await writeJson(join(state, 'settings.json'), { mode: 'auto' });
   const source = fileURLToPath(new URL('../src/', import.meta.url));
-  const protocol = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', 'diagnostics.mjs', '../scripts/probe.mjs'].map(file => readFile(join(source, file))))));
+  const protocol = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', 'diagnostics.mjs', 'sse-diagnostics.mjs', '../scripts/probe.mjs'].map(file => readFile(join(source, file))))));
   const engineInfo = await stat(process.execPath);
   const signature = fingerprint(`${process.execPath}|${engineInfo.size}|${engineInfo.mtimeMs}|${protocol}`);
   // This fixture tests manager transitions only. It never sends a model request.
