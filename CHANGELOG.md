@@ -1,5 +1,10 @@
 # 변경 내역
 
+## 0.4.11
+
+- 실제 Codex 응답에서 `Content-Type`이 없는 SSE도 종료 진단 대상에 포함. 모델 `/responses` 경로에만 제한하며 전달 바이트는 변경하지 않음.
+- 헤더가 없는 HTTP 200 안의 capacity 오류를 놓치지 않는 회귀 검증 추가.
+
 ## 0.4.10
 
 - HTTP 200 응답 안의 SSE 종료 오류를 구분하는 제한된 진단 추가. `response.failed`·`error` 등 종료 유형과 허용된 오류 코드·capacity 문구 여부만 기록.

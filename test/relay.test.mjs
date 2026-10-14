@@ -130,9 +130,9 @@ test('quota error after successful stream has begun never replays', async t => {
   assert(text.includes('unique')); assert.equal(x.seen.length, 1);
 });
 
-test('capacity error inside HTTP 200 is logged as upstream terminal metadata and forwarded byte-for-byte once', async t => {
+for (const contentType of [null, 'text/event-stream']) test(`capacity error inside HTTP 200 (${contentType || 'missing content type'}) is logged and forwarded byte-for-byte once`, async t => {
   const body = 'data: {"type":"response.output_text.delta","delta":"private text"}\n\ndata: {"type":"response.failed","response":{"id":"private-id","error":{"code":"server_overloaded","message":"Selected model is at capacity. private metadata"}}}\n\n';
-  const x = await setup(t, (_req, res) => { res.writeHead(200, {'content-type':'text/event-stream'}); res.end(body); });
+  const x = await setup(t, (_req, res) => { res.writeHead(200, contentType ? {'content-type':contentType} : {}); res.end(body); });
   const response = await x.call(); assert.equal(response.status, 200); assert.equal(await response.text(), body);
   const terminal = x.events.find(e => e.event==='sse_terminal');
   assert.equal(terminal.type,'response.failed'); assert.equal(terminal.errorCode,'server_overloaded'); assert.equal(terminal.capacityMessage,true);

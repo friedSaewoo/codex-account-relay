@@ -208,7 +208,9 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
         } else {
           // Record which side first interrupted the stream. pipeline may then close both sides.
           // Terminal metadata only; no error messages, text, IDs or unknown codes are logged.
-          const observableSse = String(upstreamResponse.headers['content-type'] || '').includes('text/event-stream') &&
+          // The live Codex endpoint can omit Content-Type on otherwise valid SSE output.
+          const contentType = String(upstreamResponse.headers['content-type'] || '').toLowerCase();
+          const observableSse = (contentType.includes('text/event-stream') || (!contentType && model && url.pathname === `${PREFIX}/responses`)) &&
             ['identity', undefined].includes(upstreamResponse.headers['content-encoding']);
           const observer = observableSse ? createSseObserver(terminal => emit({ event: 'sse_terminal', id, route: chosen, ...terminal })) : null;
           upstreamResponse.once('aborted', () => noteDisconnect('upstream_stream'));
