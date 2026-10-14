@@ -4,6 +4,9 @@ import { timingSafeEqual, createHash, randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { gunzipSync, inflateSync, brotliDecompressSync, zstdDecompressSync } from 'node:zlib';
 import { usageProvesBusinessRecovery } from './usage.mjs';
+import { safeError } from './diagnostics.mjs';
+
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300000;
 
 const PREFIX = '/backend-api/codex';
 const MODEL_ROUTES = new Set([`${PREFIX}/responses`, `${PREFIX}/responses/compact`]);
@@ -56,7 +59,7 @@ function response(res, status, code) {
   res.end(JSON.stringify({ error: { type: code, message: code } }));
 }
 
-export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuota = null, persistQuota = async () => {}, upstream = 'https://chatgpt.com', allowTestUpstream = false, maxBody = 64 * 1024 * 1024, timeoutMs = 180000, fallbackOnBusinessAuthError = false, unknownQuotaRetryMs = 0, passThroughCodexRoutes = false }) {
+export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuota = null, persistQuota = async () => {}, upstream = 'https://chatgpt.com', allowTestUpstream = false, maxBody = 64 * 1024 * 1024, timeoutMs = DEFAULT_STREAM_IDLE_TIMEOUT_MS, fallbackOnBusinessAuthError = false, unknownQuotaRetryMs = 0, passThroughCodexRoutes = false }) {
   const base = new URL(upstream);
   if (base.origin !== 'https://chatgpt.com' && !(allowTestUpstream && base.hostname === '127.0.0.1' && base.protocol === 'http:')) throw new Error('Untrusted upstream.');
   // Old state without a rejection timestamp requires a new query after this startup.
@@ -77,7 +80,7 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
     return pro;
   }
 
-  const server = http.createServer(async (req, res) => {
+  async function handleRequest(req, res) {
     let upstreamRequest;
     let upstreamResponse;
     let aborted = false;
@@ -162,13 +165,19 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
         const transport = base.protocol === 'https:' ? https : http;
         upstreamResponse = await new Promise((resolve, reject) => {
           // Destination stays fixed even if a client submits an unusual request target.
-          upstreamRequest = transport.request(new URL(url.pathname + url.search, base), { method: req.method, headers }, resolve);
-          upstreamRequest.setTimeout(timeoutMs, () => {
-            noteDisconnect('upstream_timeout', { code: 'ETIMEDOUT' });
-            upstreamRequest.destroy(new Error('Upstream timeout.'));
+          const outgoing = transport.request(new URL(url.pathname + url.search, base), { method: req.method, headers }, incoming => {
+            // Subscribe in the response callback, before any await resumes / cancellation can destroy it.
+            incoming.once('error', error => noteDisconnect('upstream_stream', error));
+            resolve(incoming);
           });
-          upstreamRequest.on('error', error => { noteDisconnect('upstream_connection', error); reject(error); });
-          upstreamRequest.end(body);
+          upstreamRequest = outgoing;
+          outgoing.setTimeout(timeoutMs, () => {
+            noteDisconnect('upstream_timeout', { code: 'ETIMEDOUT' });
+            // A previous Business attempt must never destroy a later Pro request.
+            outgoing.destroy(new Error('Upstream timeout.'));
+          });
+          outgoing.on('error', error => { noteDisconnect('upstream_connection', error); reject(error); });
+          outgoing.end(body);
         });
         const status = upstreamResponse.statusCode;
         stats.lastStatus = status;
@@ -199,7 +208,6 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
           // Record which side first interrupted the stream. pipeline may then close both sides.
           // Observe byte counts only; do not parse, buffer, rewrite or log response contents.
           upstreamResponse.once('aborted', () => noteDisconnect('upstream_stream'));
-          upstreamResponse.once('error', error => noteDisconnect('upstream_stream', error));
           upstreamResponse.on('data', chunk => { upstreamBytes += chunk.length; });
           res.writeHead(status, cleanHeaders(upstreamResponse.headers));
           res.flushHeaders();
@@ -224,6 +232,14 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
     } finally {
       if (countedModel) stats.modelInFlight--;
     }
+  }
+  const server = http.createServer((req, res) => {
+    // EventEmitter does not await an async request listener. Contain even cleanup failures
+    // to this one connection so other accepted model streams can keep running.
+    void handleRequest(req, res).catch(error => {
+      emit({ event: 'relay_handler_failed', ...safeError(error) });
+      res.destroy();
+    });
   });
   server.on('upgrade', async (req, socket) => {
     try {

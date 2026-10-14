@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { readBusiness, saveBusiness, parseAuth, stateHome, isBusiness } from './credentials.mjs';
+import { retryFileOperation } from './diagnostics.mjs';
 
 export async function readJson(path, fallback = null) {
   try { return JSON.parse(await readFile(path, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return fallback; throw e; }
@@ -14,7 +15,8 @@ export function writeJson(path, value) {
     const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
     try {
       await writeFile(tmp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
-      await rename(tmp, path);
+      // Windows readers / security software may briefly hold the destination open.
+      await retryFileOperation(() => rename(tmp, path));
     } finally { await rm(tmp, { force: true }); }
   });
   writes.set(path, next);

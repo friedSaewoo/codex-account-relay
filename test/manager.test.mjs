@@ -35,7 +35,7 @@ test('isolated manager restores normalized config on account change and reports 
   await writeJson(authPath, pro); await writeFile(configPath, original);
   await writeJson(join(state, 'settings.json'), { mode: 'auto' });
   const source = fileURLToPath(new URL('../src/', import.meta.url));
-  const protocol = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', '../scripts/probe.mjs'].map(file => readFile(join(source, file))))));
+  const protocol = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', 'diagnostics.mjs', '../scripts/probe.mjs'].map(file => readFile(join(source, file))))));
   const engineInfo = await stat(process.execPath);
   const signature = fingerprint(`${process.execPath}|${engineInfo.size}|${engineInfo.mtimeMs}|${protocol}`);
   // This fixture tests manager transitions only. It never sends a model request.
@@ -52,6 +52,18 @@ test('isolated manager restores normalized config on account change and reports 
   const command = async mode => writeJson(join(state, 'commands', `${randomUUID()}.json`), { action: 'mode', mode });
   const started = await waitUntil(async () => { const s = await status(); return s.compatibility === 'passed' && s.configActive && s.desktopReady && s; });
   assert.equal(started.pid, child.pid);
+  // Cause a real state publication error while the background cached-version check runs.
+  // It used to escape the detached promise and terminate the entire manager.
+  const stateFile = join(state, 'manager-status.json');
+  await rm(stateFile); await mkdir(stateFile);
+  await command('auto');
+  await waitUntil(async () => {
+    try { return (await readFile(join(state, 'manager-errors.jsonl'), 'utf8')).includes('background_task_failed'); } catch { return false; }
+  });
+  assert.equal(child.exitCode, null);
+  await rm(stateFile, { recursive: true, force: true });
+  const recovered = await waitUntil(async () => { const s = await status(); return s.pid === child.pid && s.compatibility === 'passed' && s.configActive && s; });
+  assert.equal(recovered.pid, started.pid);
   const enabled = await readFile(configPath, 'utf8');
   const edited = enabled.replaceAll('\r\n', '\n') + '# later user edit\n';
   await writeFile(configPath, edited);

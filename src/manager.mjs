@@ -9,6 +9,7 @@ import { enableConfig, disableConfig, removeConfig } from './config.mjs';
 import { validSettings, businessAllowed, compatibilityPassed, needsCompatibilityCheck, compatibilityRetryDelay, userStatus } from './management.mjs';
 import { usageReader } from './usage.mjs';
 import { resetManager } from './resets.mjs';
+import { createDiagnostics } from './diagnostics.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const statusPath = join(stateHome, 'manager-status.json');
@@ -16,7 +17,9 @@ const settingsPath = join(stateHome, 'settings.json');
 const compatibilityPath = join(stateHome, 'compatibility.json');
 const commandsPath = join(stateHome, 'commands');
 const port = Number(process.env.CODEX_RELAY_PORT || 19565);
-const protocolSignature = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', '../scripts/probe.mjs'].map(f => readFile(new URL(f, import.meta.url))))));
+const diagnostics = createDiagnostics(join(stateHome, 'manager-errors.jsonl'), () => relay.getStatus());
+diagnostics.install();
+const protocolSignature = fingerprint(Buffer.concat(await Promise.all(['relay.mjs', 'management.mjs', 'credentials.mjs', 'store.mjs', 'config.mjs', 'manager.mjs', 'usage.mjs', 'resets.mjs', 'account-rpc.mjs', 'diagnostics.mjs', '../scripts/probe.mjs'].map(f => readFile(new URL(f, import.meta.url))))));
 let settings, compatibility = 'checking', cachedCompatibility, configActive = false, configError = false, desktopReady = false;
 let businessRetryAt = 0, needsLogin = false, loginInProgress = false, shuttingDown = false;
 let checkedAt = 0, lastEngine = null, checkInProgress = false, tickInProgress = false;
@@ -41,7 +44,7 @@ async function refreshUsage(force = false) {
     }
     if (!shuttingDown) await publish();
   })();
-  try { await usagePending; } catch { audit({ event: 'usage_refresh_failed' }); } finally { usagePending = null; }
+  try { await usagePending; } catch (error) { diagnostics.record('background_task_failed', error, 'usage'); audit({ event: 'usage_refresh_failed' }); } finally { usagePending = null; }
 }
 const provider = businessProvider();
 const auditPath = join(stateHome, 'audit.jsonl');
@@ -115,8 +118,9 @@ async function checkCompatibility(force = false) {
     cachedCompatibility = { signature, result: compatibility, failures, checkedAt: new Date().toISOString(), retryAt: compatibility === 'passed' ? null : Date.now() + compatibilityRetryDelay(failures) };
     await writeJson(compatibilityPath, cachedCompatibility);
     audit({ event: `compatibility_${compatibility}` });
-  } catch {
+  } catch (error) {
     compatibility = 'failed';
+    diagnostics.record('compatibility_error', error, 'compatibility');
     // Throttle discovery/auth/network failures too, not just a completed failed probe.
     checkedAt = Date.now();
     if (signature) {
@@ -163,7 +167,7 @@ async function startLogin() {
     await relay.resetQuota();
     cachedCompatibility = null;
     audit({ event: 'business_login_completed' });
-  } catch { needsLogin = true; businessRetryAt = Date.now() + 15 * 60000; audit({ event: 'business_login_incomplete' }); }
+  } catch (error) { diagnostics.record('background_task_failed', error, 'login'); needsLogin = true; businessRetryAt = Date.now() + 15 * 60000; audit({ event: 'business_login_incomplete' }); }
   finally { loginInProgress = false; await publish(); }
 }
 async function consumeCommands() {
@@ -177,13 +181,13 @@ async function consumeCommands() {
       settings = validSettings({ mode: command.mode }); await writeJson(settingsPath, settings);
       if (settings.mode === 'auto') { businessRetryAt = 0; provider.invalidate(); }
       await reconcileConfig();
-      if (settings.mode !== 'off') void checkCompatibility();
+      if (settings.mode !== 'off') void diagnostics.run('compatibility', () => checkCompatibility());
     } else if (command.action === 'check') {
-      void checkCompatibility(true);
+      void diagnostics.run('compatibility', () => checkCompatibility(true));
     } else if (command.action === 'login') {
-      void startLogin();
+      void diagnostics.run('login', startLogin);
     } else if (command.action === 'usage') {
-      void refreshUsage(true);
+      void diagnostics.run('usage', () => refreshUsage(true));
     } else if (command.action === 'reset' && command.confirmed === true && ['business', 'pro'].includes(command.role) && /^[a-f0-9]{64}$/.test(command.accountKey || '')) {
       void (async () => {
         const result = await resets[command.role].consume(command.accountKey);
@@ -229,17 +233,17 @@ const timer = setInterval(async () => {
     if (ready !== desktopReady) { desktopReady = ready; await reconcileConfig(); }
     await consumeCommands();
     if (Date.now() - checkedAt > 120000 && !checkInProgress && !loginInProgress) {
-      checkedAt = Date.now(); void checkCompatibility();
+      checkedAt = Date.now(); void diagnostics.run('compatibility', () => checkCompatibility());
     }
     await publish();
-    void refreshUsage();
-  } catch { audit({ event: 'manager_tick_failed' }); }
+    void diagnostics.run('usage', refreshUsage);
+  } catch (error) { diagnostics.record('manager_tick_failed', error); audit({ event: 'manager_tick_failed' }); }
   finally { tickInProgress = false; }
 }, 2000);
-process.once('SIGINT', () => void shutdown());
-process.once('SIGTERM', () => void shutdown());
+process.once('SIGINT', () => void diagnostics.run('shutdown', shutdown));
+process.once('SIGTERM', () => void diagnostics.run('shutdown', shutdown));
 await reconcileConfig();
 await publish();
 checkedAt = Date.now();
-void checkCompatibility();
-void refreshUsage();
+void diagnostics.run('compatibility', () => checkCompatibility());
+void diagnostics.run('usage', refreshUsage);

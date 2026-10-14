@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { gzipSync } from 'node:zlib';
-import { createRelay, quotaFailure } from '../src/relay.mjs';
+import { createRelay, quotaFailure, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from '../src/relay.mjs';
+import { createDiagnostics } from '../src/diagnostics.mjs';
 import { addConfig, removeConfig } from '../src/config.mjs';
 import { fingerprint } from '../src/credentials.mjs';
 import { usageReader } from '../src/usage.mjs';
@@ -154,6 +155,35 @@ test('upstream idle timeout is recorded separately without replay or exposing pa
   const failure = x.events.find(event => event.event === 'upstream_error');
   assert.equal(failure.origin,'upstream_timeout'); assert.equal(failure.transportCode,'ETIMEDOUT');
   assert.equal(x.seen.length,1); assert(!JSON.stringify(x.events).includes('private answer'));
+});
+
+test('background write failure and another broken upstream stream leave the accepted response intact', async t => {
+  let finish;
+  const x = await setup(t, (_req, res, number) => {
+    res.writeHead(200);
+    if (number === 1) { res.write('active-first'); finish = () => res.end('active-completed'); }
+    else if (number === 2) { res.write('broken'); setTimeout(() => res.destroy(), 20); }
+    else res.end('healthy-next');
+  });
+  const accepted = await x.call();
+  const diagnostic = createDiagnostics(new URL('../reports/nonexistent/subdir/errors.jsonl', import.meta.url));
+  await diagnostic.run('compatibility', () => Promise.reject(Object.assign(new Error('locked'), { code: 'EPERM' })));
+  const broken = await x.call(); await assert.rejects(broken.text());
+  finish(); assert.equal(await accepted.text(), 'active-firstactive-completed');
+  assert.equal(await (await x.call()).text(), 'healthy-next');
+  assert.equal(x.seen.length, 3); // No replay of the broken accepted output.
+});
+
+test('regular incoming chunks reset the idle timer even during a long stream', async t => {
+  const x = await setup(t, (_req, res) => {
+    res.writeHead(200); res.write('start');
+    let count = 0;
+    const interval = setInterval(() => { if (++count === 8) { clearInterval(interval); res.end('done'); } else res.write('.'); }, 25);
+    res.on('close', () => clearInterval(interval));
+  }, { timeoutMs: 100 });
+  assert.equal(await (await x.call()).text(), 'start.......done');
+  assert.equal(x.events.some(event => event.event === 'upstream_error'), false);
+  assert.equal(DEFAULT_STREAM_IDLE_TIMEOUT_MS, 300000);
 });
 test('graceful shutdown preserves an active response through completion without replay', async t => {
   let finish;
