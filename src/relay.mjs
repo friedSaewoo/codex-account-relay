@@ -248,6 +248,13 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
     });
   });
   server.on('upgrade', async (req, socket) => {
+    // HTTP relinquishes the raw socket on upgrade. A reset after the 426 reply
+    // is an EventEmitter error, not a rejected promise caught by the try below.
+    // Register before authorization yields so it cannot terminate other SSE streams.
+    socket.on('error', error => {
+      emit({ event: 'upgrade_socket_error', ...safeError(error) });
+      socket.destroy();
+    });
     try {
       if (!await authorize(req)) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
       stats.upgradesRejected++;
