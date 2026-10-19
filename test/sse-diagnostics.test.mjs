@@ -25,3 +25,10 @@ test('multiline events and observer failures never propagate or disclose arbitra
   assert.deepEqual(events,[{type:'error',errorCode:null,capacityMessage:false}]);
   assert.doesNotThrow(()=>createSseObserver(()=>{throw new Error('failure');}).write(Buffer.from('data: {"type":"response.completed"}\n\n')));
 });
+
+test('partial nested error details do not hide an allowlisted envelope code or capacity flag', () => {
+  const events=[],observer=createSseObserver(e=>events.push(e));
+  observer.write(Buffer.from('data: {"type":"error","code":"server_overloaded","message":"Selected model is at capacity. PRIVATE_ENVELOPE","error":{"message":"PRIVATE_DETAIL","account_id":"PRIVATE_ACCOUNT"}}\n\n'));
+  assert.deepEqual(events,[{type:'error',errorCode:'server_overloaded',capacityMessage:true}]);
+  assert(!/PRIVATE|account_id/.test(JSON.stringify(events)));
+});

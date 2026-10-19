@@ -17,9 +17,11 @@ export function createSseObserver(record, maxBytes = 65536) {
         try {
           const value = JSON.parse(lines.join('\n'));
           if (TYPES.has(value.type)) {
-            const error = value.response?.error || value.error || value;
-            const code = CODES.has(error.code) ? error.code : CODES.has(error.type) ? error.type : null;
-            const capacity = typeof error.message === 'string' && /selected model is at capacity/i.test(error.message);
+            // Some error events put a code on the envelope and details in error.
+            // An incomplete nested object must not hide an allowlisted outer code.
+            const candidates = [value.response?.error, value.error, value].filter(error => error && typeof error === 'object' && !Array.isArray(error));
+            const code = candidates.flatMap(error => [error.code, error.type]).find(code => CODES.has(code)) || null;
+            const capacity = candidates.some(error => typeof error.message === 'string' && /selected model is at capacity/i.test(error.message));
             terminalRecorded = true;
             record({ type: value.type, errorCode: code, capacityMessage: capacity });
           }
