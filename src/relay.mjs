@@ -248,18 +248,39 @@ export function createRelay({ getPro, getBusiness, audit = () => {}, initialQuot
     });
   });
   server.on('upgrade', async (req, socket) => {
+    const id = randomUUID();
+    const startedAt = Date.now();
+    let rejectionStatus = null;
+    // HTTP does not manage upgraded sockets. Some clients leave their write side
+    // open after receiving 426, which must not hold a relay shutdown indefinitely.
+    const cleanup = setTimeout(() => {
+      emit({ event: 'upgrade_socket_cleanup', id, status: rejectionStatus, durationMs: Date.now() - startedAt });
+      socket.destroy();
+    }, 5000);
+    cleanup.unref();
+    socket.once('close', () => clearTimeout(cleanup));
+    socket.once('end', () => socket.destroy());
     // HTTP relinquishes the raw socket on upgrade. A reset after the 426 reply
     // is an EventEmitter error, not a rejected promise caught by the try below.
     // Register before authorization yields so it cannot terminate other SSE streams.
     socket.on('error', error => {
-      emit({ event: 'upgrade_socket_error', ...safeError(error) });
+      emit({ event: 'upgrade_socket_error', id, status: rejectionStatus, ...safeError(error) });
       socket.destroy();
     });
+    function rejectUpgrade(status, text) {
+      if (socket.destroyed) return;
+      rejectionStatus = status;
+      // Renew the bound after the complete rejection is flushed. No other
+      // socket or accepted response is touched, and no model request is replayed.
+      socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => {
+        if (!socket.destroyed) cleanup.refresh();
+      });
+    }
     try {
-      if (!await authorize(req)) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); return; }
+      if (!await authorize(req)) { rejectUpgrade(403, 'Forbidden'); return; }
       stats.upgradesRejected++;
-      emit({ event: 'websocket_rejected' });
-      socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      emit({ event: 'websocket_rejected', id, status: 426, fallback: 'http' });
+      rejectUpgrade(426, 'Upgrade Required');
     } catch { socket.destroy(); }
   });
   server.on('clientError', (_error, socket) => socket.destroy());
